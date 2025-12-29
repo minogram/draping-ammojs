@@ -54,7 +54,7 @@ async function init() {
     let isRunning = false;
     let clothMesh: THREE.Mesh | null = null;
     let clothGeom: THREE.PlaneGeometry | null = null;
-    let cylinderMesh: THREE.Mesh | null = null;
+    let obstacleMesh: THREE.Mesh | null = null;
     let groundMesh: THREE.Mesh | null = null;
     const pinMeshes: Map<number, THREE.Object3D> = new Map();
 
@@ -69,11 +69,11 @@ async function init() {
             (clothMesh.material as THREE.Material).dispose();
             clothMesh = null;
         }
-        if (cylinderMesh) {
-            scene.remove(cylinderMesh);
-            cylinderMesh.geometry.dispose();
-            (cylinderMesh.material as THREE.Material).dispose();
-            cylinderMesh = null;
+        if (obstacleMesh) {
+            scene.remove(obstacleMesh);
+            obstacleMesh.geometry.dispose();
+            (obstacleMesh.material as THREE.Material).dispose();
+            obstacleMesh = null;
         }
         if (groundMesh) {
             scene.remove(groundMesh);
@@ -108,24 +108,40 @@ async function init() {
         scene.add(groundMesh);
         await physicsApi.createGround();
 
-        // 3. 원통 (Cylinder) 생성
-        const cylinderRadius = params.cylinderRadius;
-        const cylinderHeight = params.cylinderHeight;
-        const cylinderPos = { x: 0, y: cylinderHeight / 2, z: 0 };
+        // 3. 장애물 (Obstacle) 생성
+        const obstacleType = params.obstacleType;
+        const obstaclePos = { x: 0, y: params.obstacleHeight / 2, z: 0 };
+        const obstacleMat = new THREE.MeshPhongMaterial({ color: 0x888888 });
 
-        const cylinderGeom = new THREE.CylinderGeometry(cylinderRadius - 0.05, cylinderRadius - 0.05, cylinderHeight - 0.05, 32);
-        const cylinderMat = new THREE.MeshPhongMaterial({ color: 0x888888 });
-        cylinderMesh = new THREE.Mesh(cylinderGeom, cylinderMat);
-        cylinderMesh.position.set(cylinderPos.x, cylinderPos.y, cylinderPos.z);
-        scene.add(cylinderMesh);
+        if (obstacleType === 'Cylinder') {
+            const radius = params.obstacleRadius;
+            const height = params.obstacleHeight;
+            const geom = new THREE.CylinderGeometry(radius - 0.05, radius - 0.05, height - 0.05, 32);
+            obstacleMesh = new THREE.Mesh(geom, obstacleMat);
+            obstacleMesh.position.set(obstaclePos.x, obstaclePos.y, obstaclePos.z);
+            await physicsApi.createCylinder(radius, height, obstaclePos);
+        } else if (obstacleType === 'Sphere') {
+            const radius = params.obstacleRadius;
+            const geom = new THREE.SphereGeometry(radius - 0.05, 32, 32);
+            obstacleMesh = new THREE.Mesh(geom, obstacleMat);
+            obstacleMesh.position.set(obstaclePos.x, obstaclePos.y, obstaclePos.z);
+            await physicsApi.createSphere(radius, obstaclePos);
+        } else if (obstacleType === 'Box') {
+            const size = params.obstacleRadius * 2; // Use radius as half-size for consistency
+            const height = params.obstacleHeight;
+            const geom = new THREE.BoxGeometry(size - 0.05, height - 0.05, size - 0.05);
+            obstacleMesh = new THREE.Mesh(geom, obstacleMat);
+            obstacleMesh.position.set(obstaclePos.x, obstaclePos.y, obstaclePos.z);
+            await physicsApi.createBox({ x: size, y: height, z: size }, obstaclePos);
+        }
 
-        await physicsApi.createCylinder(cylinderRadius, cylinderHeight, cylinderPos);
+        if (obstacleMesh) scene.add(obstacleMesh);
 
         // 4. 천 (Cloth) 생성
         const clothWidth = 6;
         const clothHeight = 6;
         const segments = params.segments;
-        const clothPos = { x: 0, y: cylinderHeight + 2, z: 0 };
+        const clothPos = { x: 0, y: params.obstacleHeight + 2, z: 0 };
 
         clothGeom = new THREE.PlaneGeometry(clothWidth, clothHeight, segments, segments);
         clothGeom.rotateX(-Math.PI / 2);
@@ -159,8 +175,9 @@ async function init() {
         wireframe: false,
         color: '#ff0000',
         segments: 40,
-        cylinderRadius: 2,
-        cylinderHeight: 4,
+        obstacleType: 'Cylinder',
+        obstacleRadius: 2,
+        obstacleHeight: 4,
         handTool: false,
         pinTool: false,
         textureRepeat: 1,
@@ -205,14 +222,22 @@ async function init() {
         pane.refresh();
     });
 
-    const cylinderFolder = pane.addFolder({ title: 'Cylinder Settings' });
-    cylinderFolder.addBinding(params, 'cylinderRadius', {
+    const obstacleFolder = pane.addFolder({ title: 'Obstacle Settings' });
+    obstacleFolder.addBinding(params, 'obstacleType', {
+        options: {
+            Cylinder: 'Cylinder',
+            Sphere: 'Sphere',
+            Box: 'Box'
+        },
+        label: 'Type'
+    });
+    obstacleFolder.addBinding(params, 'obstacleRadius', {
         min: 0.5,
         max: 4,
         step: 0.1,
-        label: 'Radius'
+        label: 'Radius/Size'
     });
-    cylinderFolder.addBinding(params, 'cylinderHeight', {
+    obstacleFolder.addBinding(params, 'obstacleHeight', {
         min: 1,
         max: 8,
         step: 0.1,

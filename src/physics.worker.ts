@@ -96,6 +96,42 @@ function createCylinder(radius: number, height: number, position: {x: number, y:
     rigidBodies.push(body);
 }
 
+function createSphere(radius: number, position: {x: number, y: number, z: number}) {
+    const ammo = ammoInstance;
+    const transform = new ammo.btTransform();
+    transform.setIdentity();
+    transform.setOrigin(new ammo.btVector3(position.x, position.y, position.z));
+    
+    const motionState = new ammo.btDefaultMotionState(transform);
+    const colShape = new ammo.btSphereShape(radius);
+    colShape.setMargin(0.1);
+
+    const localInertia = new ammo.btVector3(0, 0, 0);
+    const rbInfo = new ammo.btRigidBodyConstructionInfo(0, motionState, colShape, localInertia);
+    const body = new ammo.btRigidBody(rbInfo);
+
+    physicsWorld.addRigidBody(body);
+    rigidBodies.push(body);
+}
+
+function createBox(size: {x: number, y: number, z: number}, position: {x: number, y: number, z: number}) {
+    const ammo = ammoInstance;
+    const transform = new ammo.btTransform();
+    transform.setIdentity();
+    transform.setOrigin(new ammo.btVector3(position.x, position.y, position.z));
+    
+    const motionState = new ammo.btDefaultMotionState(transform);
+    const colShape = new ammo.btBoxShape(new ammo.btVector3(size.x / 2, size.y / 2, size.z / 2));
+    colShape.setMargin(0.1);
+
+    const localInertia = new ammo.btVector3(0, 0, 0);
+    const rbInfo = new ammo.btRigidBodyConstructionInfo(0, motionState, colShape, localInertia);
+    const body = new ammo.btRigidBody(rbInfo);
+
+    physicsWorld.addRigidBody(body);
+    rigidBodies.push(body);
+}
+
 function createCloth(width: number, height: number, segmentsW: number, segmentsH: number, position: {x: number, y: number, z: number}, physicsParams: any) {
     const ammo = ammoInstance;
     
@@ -139,7 +175,13 @@ function createCloth(width: number, height: number, segmentsW: number, segmentsH
     }
 
     // Generate clusters for self-collision if using CL_SELF (0x10)
-    clothSoftBody.generateClusters(0);
+    // For very high resolutions, automatic cluster generation (0) can cause OOM.
+    if (segmentsW * segmentsH <= 2500) { // Up to 50x50
+        clothSoftBody.generateClusters(0);
+    } else {
+        // For higher resolutions, use a fixed number of clusters to avoid OOM
+        clothSoftBody.generateClusters(16);
+    }
 
     ammo.castObject(clothSoftBody, ammo.btCollisionObject).getCollisionShape().setMargin(0.1);
     
@@ -248,6 +290,8 @@ const api = {
     initPhysics,
     createGround,
     createCylinder,
+    createSphere,
+    createBox,
     createCloth,
     step,
     reset,
