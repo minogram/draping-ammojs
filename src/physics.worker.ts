@@ -96,7 +96,7 @@ function createCylinder(radius: number, height: number, position: {x: number, y:
     rigidBodies.push(body);
 }
 
-function createCloth(width: number, height: number, segmentsW: number, segmentsH: number, position: {x: number, y: number, z: number}) {
+function createCloth(width: number, height: number, segmentsW: number, segmentsH: number, position: {x: number, y: number, z: number}, physicsParams: any) {
     const ammo = ammoInstance;
     
     const clothCorner00 = new ammo.btVector3(position.x - width / 2, position.y, position.z - height / 2);
@@ -117,15 +117,30 @@ function createCloth(width: number, height: number, segmentsW: number, segmentsH
     );
 
     const sbConfig = clothSoftBody.get_m_cfg();
-    sbConfig.set_viterations(10);
-    sbConfig.set_piterations(10);
-    sbConfig.set_collisions(0x11); // Enable soft-soft and soft-rigid collisions
+    sbConfig.set_viterations(20);
+    sbConfig.set_piterations(20);
+    sbConfig.set_collisions(0x11); // SDF_RS | CL_SELF
 
-    // Soft body material
-    clothSoftBody.get_m_materials().at(0).set_m_kLST(0.9);
-    clothSoftBody.get_m_materials().at(0).set_m_kAST(0.9);
+    // Apply physics parameters
+    if (physicsParams) {
+        sbConfig.set_kDP(physicsParams.damping || 0.01);
+        sbConfig.set_kDF(physicsParams.friction || 0.5);
+        
+        const material = clothSoftBody.get_m_materials().at(0);
+        material.set_m_kLST(physicsParams.stiffness || 0.9);
+        material.set_m_kAST(physicsParams.stiffness || 0.9);
+        
+        clothSoftBody.setTotalMass(physicsParams.mass || 0.5, false);
+    } else {
+        // Default values
+        clothSoftBody.get_m_materials().at(0).set_m_kLST(0.9);
+        clothSoftBody.get_m_materials().at(0).set_m_kAST(0.9);
+        clothSoftBody.setTotalMass(0.5, false);
+    }
 
-    clothSoftBody.setTotalMass(0.5, false);
+    // Generate clusters for self-collision if using CL_SELF (0x10)
+    clothSoftBody.generateClusters(0);
+
     ammo.castObject(clothSoftBody, ammo.btCollisionObject).getCollisionShape().setMargin(0.1);
     
     // Disable sleeping for the cloth so it can always be interacted with
@@ -139,6 +154,8 @@ function createCloth(width: number, height: number, segmentsW: number, segmentsH
 
 function step(deltaTime: number) {
     if (!physicsWorld) return;
+
+    const startTime = performance.now();
 
     // Handle dragging
     if (draggedNodeIndex !== -1 && dragTargetPos && softBodies.length > 0) {
@@ -156,9 +173,11 @@ function step(deltaTime: number) {
 
     physicsWorld.stepSimulation(deltaTime, 10);
 
+    const stepTime = performance.now() - startTime;
+
     // 천의 정점 데이터 업데이트
     const softBody = softBodies[0];
-    if (!softBody) return null;
+    if (!softBody) return { positions: null, stepTime };
 
     const nodes = softBody.get_m_nodes();
     const numNodes = nodes.size();
@@ -172,11 +191,35 @@ function step(deltaTime: number) {
         positions[i * 3 + 2] = pos.z();
     }
 
-    return Comlink.transfer(positions, [positions.buffer]);
+    return {
+        positions: Comlink.transfer(positions, [positions.buffer]),
+        stepTime
+    };
 }
 
 function reset() {
-    /* ... existing code ... */
+    if (!physicsWorld) return;
+
+    // Remove soft bodies
+    for (let i = 0; i < softBodies.length; i++) {
+        physicsWorld.removeSoftBody(softBodies[i]);
+        // Ammo.destroy might not be available for all objects, but we should try to clean up
+        try { ammoInstance.destroy(softBodies[i]); } catch(e) {}
+    }
+    softBodies = [];
+
+    // Remove rigid bodies
+    for (let i = 0; i < rigidBodies.length; i++) {
+        physicsWorld.removeRigidBody(rigidBodies[i]);
+        try {
+            if (rigidBodies[i].getMotionState()) ammoInstance.destroy(rigidBodies[i].getMotionState());
+            ammoInstance.destroy(rigidBodies[i]);
+        } catch(e) {}
+    }
+    rigidBodies = [];
+    
+    draggedNodeIndex = -1;
+    dragTargetPos = null;
 }
 
 function pickNode(nodeIndex: number, position: {x: number, y: number, z: number}) {
@@ -193,6 +236,14 @@ function releaseNode() {
     dragTargetPos = null;
 }
 
+function pinNode(nodeIndex: number) {
+    if (softBodies.length === 0) return;
+    const softBody = softBodies[0];
+    const node = softBody.get_m_nodes().at(nodeIndex);
+    // Set inverse mass to 0 to fix the node in place
+    node.set_m_im(0);
+}
+
 const api = {
     initPhysics,
     createGround,
@@ -202,7 +253,8 @@ const api = {
     reset,
     pickNode,
     dragNode,
-    releaseNode
+    releaseNode,
+    pinNode
 };
 
 Comlink.expose(api);

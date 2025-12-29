@@ -2,9 +2,16 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import * as Comlink from 'comlink';
 import { Pane } from 'tweakpane';
+import Stats from 'stats.js';
 import './style.css';
 
 async function init() {
+    // 0. Stats 설정
+    const stats = new Stats();
+    stats.showPanel(0); // 0: fps, 1: ms, 2: mb, 3+: custom
+    document.body.appendChild(stats.dom);
+    stats.dom.style.cssText = 'position:fixed;top:0;left:0;cursor:pointer;opacity:0.9;z-index:10000';
+
     // 1. Three.js 기본 설정
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x222222);
@@ -49,6 +56,7 @@ async function init() {
     let clothGeom: THREE.PlaneGeometry | null = null;
     let cylinderMesh: THREE.Mesh | null = null;
     let groundMesh: THREE.Mesh | null = null;
+    const pinMeshes: Map<number, THREE.Object3D> = new Map();
 
     const createSampleScene = async () => {
         if (!physicsReady) return;
@@ -73,6 +81,23 @@ async function init() {
             (groundMesh.material as THREE.Material).dispose();
             groundMesh = null;
         }
+        
+        // Pin 제거
+        pinMeshes.forEach(obj => {
+            scene.remove(obj);
+            obj.traverse((child) => {
+                if (child instanceof THREE.Mesh) {
+                    child.geometry.dispose();
+                    if (Array.isArray(child.material)) {
+                        child.material.forEach(m => m.dispose());
+                    } else {
+                        child.material.dispose();
+                    }
+                }
+            });
+        });
+        pinMeshes.clear();
+
         await physicsApi.reset();
 
         // 2.5 바닥 (Ground) 생성
@@ -110,7 +135,12 @@ async function init() {
         clothMesh = new THREE.Mesh(clothGeom, clothMat);
         scene.add(clothMesh);
 
-        await physicsApi.createCloth(clothWidth, clothHeight, segments, segments, clothPos);
+        await physicsApi.createCloth(clothWidth, clothHeight, segments, segments, clothPos, {
+            stiffness: params.stiffness,
+            friction: params.friction,
+            damping: params.damping,
+            mass: params.mass
+        });
 
         // UI 업데이트를 위해 변수 공유
         (window as any).clothMat = clothMat;
@@ -132,7 +162,17 @@ async function init() {
         cylinderRadius: 2,
         cylinderHeight: 4,
         handTool: false,
+        pinTool: false,
         textureRepeat: 1,
+        stiffness: 0.9,
+        friction: 0.5,
+        damping: 0.01,
+        mass: 0.5,
+        preset: 'Custom',
+        fps: 0,
+        physicsStep: 0,
+        memory: 0,
+        vertices: 0,
         sample: () => {
             createSampleScene();
         },
@@ -156,6 +196,13 @@ async function init() {
     const toolFolder = pane.addFolder({ title: 'Tools' });
     toolFolder.addBinding(params, 'handTool', { label: 'Hand Tool' }).on('change', (ev) => {
         controls.enabled = !ev.value; // Disable orbit controls when hand tool is active
+        if (ev.value) params.pinTool = false; // Exclusive tools
+        pane.refresh();
+    });
+    toolFolder.addBinding(params, 'pinTool', { label: 'Pin Tool' }).on('change', (ev) => {
+        controls.enabled = !ev.value;
+        if (ev.value) params.handTool = false; // Exclusive tools
+        pane.refresh();
     });
 
     const cylinderFolder = pane.addFolder({ title: 'Cylinder Settings' });
@@ -173,11 +220,71 @@ async function init() {
     });
 
     const clothFolder = pane.addFolder({ title: 'Cloth Settings' });
+    
+    const fabricPresets: Record<string, any> = {
+        'Silk': { stiffness: 0.4, friction: 0.2, damping: 0.01, mass: 0.2, color: '#ffb6c1' },
+        'Cotton': { stiffness: 0.7, friction: 0.5, damping: 0.02, mass: 0.5, color: '#ffffff' },
+        'Wool': { stiffness: 0.5, friction: 0.8, damping: 0.05, mass: 0.8, color: '#f5f5dc' },
+        'Denim': { stiffness: 0.9, friction: 0.7, damping: 0.03, mass: 1.2, color: '#1560bd' },
+        'Custom': {}
+    };
+
+    clothFolder.addBinding(params, 'preset', {
+        options: {
+            Silk: 'Silk',
+            Cotton: 'Cotton',
+            Wool: 'Wool',
+            Denim: 'Denim',
+            Custom: 'Custom'
+        },
+        label: 'Fabric Preset'
+    }).on('change', (ev) => {
+        const preset = fabricPresets[ev.value];
+        if (ev.value !== 'Custom') {
+            params.stiffness = preset.stiffness;
+            params.friction = preset.friction;
+            params.damping = preset.damping;
+            params.mass = preset.mass;
+            params.color = preset.color;
+            
+            if ((window as any).clothMat) {
+                (window as any).clothMat.color.set(params.color);
+            }
+            
+            pane.refresh();
+            createSampleScene(); // Automatically apply preset
+        }
+    });
+
     clothFolder.addBinding(params, 'segments', {
         min: 10,
         max: 80,
         step: 1,
         label: 'Resolution'
+    });
+    clothFolder.addBinding(params, 'stiffness', {
+        min: 0.1,
+        max: 1.0,
+        step: 0.1,
+        label: 'Stiffness'
+    });
+    clothFolder.addBinding(params, 'friction', {
+        min: 0.0,
+        max: 1.0,
+        step: 0.1,
+        label: 'Friction'
+    });
+    clothFolder.addBinding(params, 'damping', {
+        min: 0.0,
+        max: 1.0,
+        step: 0.01,
+        label: 'Damping'
+    });
+    clothFolder.addBinding(params, 'mass', {
+        min: 0.1,
+        max: 5.0,
+        step: 0.1,
+        label: 'Mass'
     });
 
     const visualsFolder = pane.addFolder({ title: 'Visuals' });
@@ -238,6 +345,13 @@ async function init() {
         }
     });
 
+    const diagFolder = pane.addFolder({ title: 'Diagnostics', expanded: false });
+    diagFolder.addBinding(params, 'physicsStep', { readonly: true, label: 'Physics (ms)', format: (v) => v.toFixed(2) });
+    diagFolder.addBinding(params, 'vertices', { readonly: true, label: 'Vertices' });
+    if ((performance as any).memory) {
+        diagFolder.addBinding(params, 'memory', { readonly: true, label: 'Memory (MB)', format: (v) => v.toFixed(1) });
+    }
+
     pane.addButton({ title: 'Reset' }).on('click', params.reset);
 
     // 6. 애니메이션 루프
@@ -245,29 +359,44 @@ async function init() {
 
     async function animate() {
         requestAnimationFrame(animate);
+        stats.begin();
 
         const deltaTime = Math.min(clock.getDelta(), 0.1);
         
         // Call step if running OR if currently dragging (to update the mesh while paused)
         if (physicsReady && clothGeom && (isRunning || isDragging)) {
-            const positions = await physicsApi.step(isRunning ? deltaTime : 0);
-            if (positions) {
+            const result = await physicsApi.step(isRunning ? deltaTime : 0);
+            if (result && result.positions) {
                 const attr = clothGeom.attributes.position;
-                (attr.array as Float32Array).set(positions);
+                (attr.array as Float32Array).set(result.positions);
                 attr.needsUpdate = true;
                 clothGeom.computeVertexNormals();
+                
+                params.physicsStep = result.stepTime;
+                params.vertices = attr.count;
+
+                // Update pin positions
+                pinMeshes.forEach((mesh, vIdx) => {
+                    mesh.position.set(attr.getX(vIdx), attr.getY(vIdx), attr.getZ(vIdx));
+                });
             }
+        }
+
+        if ((performance as any).memory) {
+            params.memory = (performance as any).memory.usedJSHeapSize / 1048576;
         }
 
         controls.update();
         renderer.render(scene, camera);
+        
+        stats.end();
     }
 
     animate();
 
-    // Mouse Events for Hand Tool
+    // Mouse Events for Hand Tool & Pin Tool
     window.addEventListener('mousedown', async (event) => {
-        if (!params.handTool || !clothMesh || !clothGeom) return;
+        if ((!params.handTool && !params.pinTool) || !clothMesh || !clothGeom) return;
 
         mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
         mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
@@ -300,15 +429,44 @@ async function init() {
             });
 
             if (closestVertexIndex !== -1) {
-                isDragging = true;
-                draggedVertexIndex = closestVertexIndex;
-                
-                // Setup drag plane facing the camera
-                const normal = new THREE.Vector3();
-                camera.getWorldDirection(normal);
-                dragPlane.setFromNormalAndCoplanarPoint(normal.negate(), hitPos);
-                
-                await physicsApi.pickNode(draggedVertexIndex, { x: hitPos.x, y: hitPos.y, z: hitPos.z });
+                if (params.handTool) {
+                    isDragging = true;
+                    draggedVertexIndex = closestVertexIndex;
+                    
+                    // Setup drag plane facing the camera
+                    const normal = new THREE.Vector3();
+                    camera.getWorldDirection(normal);
+                    dragPlane.setFromNormalAndCoplanarPoint(normal.negate(), hitPos);
+                    
+                    await physicsApi.pickNode(draggedVertexIndex, { x: hitPos.x, y: hitPos.y, z: hitPos.z });
+                } else if (params.pinTool) {
+                    if (!pinMeshes.has(closestVertexIndex)) {
+                        await physicsApi.pinNode(closestVertexIndex);
+                        
+                        // Create visual pin (Group of Rod + Head)
+                        const pinGroup = new THREE.Group();
+                        
+                        // Rod (Cylinder)
+                        const rodGeom = new THREE.CylinderGeometry(0.01, 0.01, 0.2, 8);
+                        const rodMat = new THREE.MeshPhongMaterial({ color: 0xaaaaaa });
+                        const rodMesh = new THREE.Mesh(rodGeom, rodMat);
+                        rodMesh.position.y = 0.1; // Move up so bottom is at 0
+                        pinGroup.add(rodMesh);
+                        
+                        // Head (Sphere)
+                        const headGeom = new THREE.SphereGeometry(0.04, 16, 16);
+                        const headMat = new THREE.MeshPhongMaterial({ color: 0xffff00 }); // Yellow head
+                        const headMesh = new THREE.Mesh(headGeom, headMat);
+                        headMesh.position.y = 0.2; // Top of the rod
+                        pinGroup.add(headMesh);
+                        
+                        const posAttr = clothGeom.attributes.position;
+                        pinGroup.position.set(posAttr.getX(closestVertexIndex), posAttr.getY(closestVertexIndex), posAttr.getZ(closestVertexIndex));
+                        
+                        scene.add(pinGroup);
+                        pinMeshes.set(closestVertexIndex, pinGroup);
+                    }
+                }
             }
         }
     });
