@@ -154,9 +154,14 @@ function createCloth(width: number, height: number, segmentsW: number, segmentsH
 
     const sbConfig = clothSoftBody.get_m_cfg();
     sbConfig.set_viterations(20);
-    sbConfig.set_piterations(20);
+    sbConfig.set_piterations(40); // Increase iterations for smoother silhouette
     sbConfig.set_collisions(0x11); // SDF_RS | CL_SELF
-
+    
+    // Aerodynamics: 물리적으로 공기 저항을 추가하여 급격한 꺾임 방지
+    sbConfig.set_kLF(0.05); // Lift
+    sbConfig.set_kDG(0.01); // Drag
+    sbConfig.set_kPR(0.0);  // Pressure
+    
     // Apply physics parameters
     if (physicsParams) {
         sbConfig.set_kDP(physicsParams.damping || 0.01);
@@ -176,17 +181,27 @@ function createCloth(width: number, height: number, segmentsW: number, segmentsH
     }
 
     // Add bending constraints
-    // The distance (2nd param) effectively controls bending stiffness
-    const bendingDistance = physicsParams?.bending ? Math.floor(physicsParams.bending * 3) + 1 : 2;
-    clothSoftBody.generateBendingConstraints(bendingDistance);
-
-    // Generate clusters for self-collision if using CL_SELF (0x10)
-    // For very high resolutions, automatic cluster generation (0) can cause OOM.
-    if (segmentsW * segmentsH <= 2500) { // Up to 50x50
-        clothSoftBody.generateClusters(0);
+    // High resolution creates too many links, causing OOM/Abort in the WASM heap.
+    // We skip bending constraints for very high resolutions to ensure stability.
+    const totalVertices = (segmentsW + 1) * (segmentsH + 1);
+    if (totalVertices < 7000) { // Up to ~80x80
+        let bendingDistance = physicsParams?.bending ? Math.floor(physicsParams.bending * 3) + 1 : 2;
+        if (bendingDistance > 0) {
+            clothSoftBody.generateBendingConstraints(bendingDistance);
+        }
     } else {
-        // For higher resolutions, use a fixed number of clusters to avoid OOM
+        // For high resolutions, we rely on the structural links and Math Smoothing in main thread
+        console.log('High resolution detected: Skipping bending constraints for stability');
+    }
+
+    // Generate clusters for self-collision
+    if (totalVertices <= 2500) { // Up to 50x50
+        clothSoftBody.generateClusters(0);
+    } else if (totalVertices <= 6400) { // Up to 80x80
         clothSoftBody.generateClusters(16);
+    } else {
+        // For 80x80+, clusters consume too much memory.
+        sbConfig.set_collisions(0x11 & ~0x10); // Remove CL_SELF (0x10)
     }
 
     ammo.castObject(clothSoftBody, ammo.btCollisionObject).getCollisionShape().setMargin(0.1);
@@ -292,6 +307,25 @@ function pinNode(nodeIndex: number) {
     node.set_m_im(0);
 }
 
+function updateClothParams(params: any) {
+    if (softBodies.length === 0) return;
+    const softBody = softBodies[0];
+    const sbConfig = softBody.get_m_cfg();
+    
+    if (params.damping !== undefined) sbConfig.set_kDP(params.damping);
+    if (params.friction !== undefined) sbConfig.set_kDF(params.friction);
+    
+    const material = softBody.get_m_materials().at(0);
+    if (params.stiffness !== undefined) {
+        material.set_m_kLST(params.stiffness);
+        material.set_m_kAST(params.stiffness);
+    }
+    
+    if (params.mass !== undefined) {
+        softBody.setTotalMass(params.mass, false);
+    }
+}
+
 const api = {
     initPhysics,
     createGround,
@@ -304,7 +338,8 @@ const api = {
     pickNode,
     dragNode,
     releaseNode,
-    pinNode
+    pinNode,
+    updateClothParams
 };
 
 Comlink.expose(api);

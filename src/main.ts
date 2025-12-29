@@ -1,5 +1,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 import * as Comlink from 'comlink';
 import { Pane } from 'tweakpane';
 import Stats from 'stats.js';
@@ -22,7 +25,17 @@ async function init() {
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.toneMapping = THREE.ReinhardToneMapping;
+    renderer.toneMappingExposure = 1.0;
     document.getElementById('app')?.appendChild(renderer.domElement);
+
+    // Post-processing for better anti-aliasing (SMAA)
+    const composer = new EffectComposer(renderer);
+    const renderPass = new RenderPass(scene, camera);
+    composer.addPass(renderPass);
+
+    const smaaPass = new SMAAPass(window.innerWidth * renderer.getPixelRatio(), window.innerHeight * renderer.getPixelRatio());
+    composer.addPass(smaaPass);
 
     const controls = new OrbitControls(camera, renderer.domElement);
     
@@ -46,6 +59,9 @@ async function init() {
     const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
     directionalLight.position.set(5, 10, 5);
     scene.add(directionalLight);
+
+    // Store lights for brightness control
+    const lights = { ambient: ambientLight, directional: directionalLight };
 
     const worker = new Worker(new URL('./physics.worker.ts', import.meta.url), { type: 'module' });
     const physicsApi = Comlink.wrap<any>(worker);
@@ -152,12 +168,17 @@ async function init() {
         clothGeom.rotateX(-Math.PI / 2);
         clothGeom.translate(clothPos.x, clothPos.y, clothPos.z);
         
-        const clothMat = new THREE.MeshPhongMaterial({ 
+        const clothMat = new THREE.MeshPhysicalMaterial({ 
             color: params.color, 
             side: THREE.DoubleSide, 
             wireframe: params.wireframe,
             transparent: params.opacity < 1.0,
-            opacity: params.opacity
+            opacity: params.opacity,
+            roughness: 0.8,
+            metalness: 0.0,
+            sheen: 1.0,
+            sheenRoughness: 0.5,
+            sheenColor: new THREE.Color(0xffffff)
         });
         clothMesh = new THREE.Mesh(clothGeom, clothMat);
         scene.add(clothMesh);
@@ -187,6 +208,7 @@ async function init() {
         wireframe: false,
         color: '#ff0000',
         opacity: 1.0,
+        exposure: 1.0,
         showAxes: true,
         showGrid: true,
         segments: 40,
@@ -196,6 +218,7 @@ async function init() {
         handTool: false,
         pinTool: false,
         textureRepeat: 1,
+        textureType: 'None',
         stiffness: 0.9,
         bending: 0.5,
         friction: 0.5,
@@ -295,7 +318,13 @@ async function init() {
             }
             
             pane.refresh();
-            createSampleScene(); // Automatically apply preset
+            // Update physics parameters without resetting the scene
+            physicsApi.updateClothParams({
+                stiffness: params.stiffness,
+                friction: params.friction,
+                damping: params.damping,
+                mass: params.mass
+            });
         }
     });
 
@@ -310,30 +339,43 @@ async function init() {
         max: 1.0,
         step: 0.1,
         label: 'Stiffness'
+    }).on('change', (ev) => {
+        physicsApi.updateClothParams({ stiffness: ev.value });
     });
     clothFolder.addBinding(params, 'bending', {
         min: 0.0,
         max: 1.0,
         step: 0.1,
         label: 'Bending'
+    }).on('change', () => {
+        // Bending constraints are structural and cannot be updated on the fly 
+        // without resetting the soft body. We skip automatic reset to avoid 
+        // jumping back to the initial position.
+        // New bending will be applied on the next 'Sample' click.
     });
     clothFolder.addBinding(params, 'friction', {
         min: 0.0,
         max: 1.0,
         step: 0.1,
         label: 'Friction'
+    }).on('change', (ev) => {
+        physicsApi.updateClothParams({ friction: ev.value });
     });
     clothFolder.addBinding(params, 'damping', {
         min: 0.0,
         max: 1.0,
         step: 0.01,
         label: 'Damping'
+    }).on('change', (ev) => {
+        physicsApi.updateClothParams({ damping: ev.value });
     });
     clothFolder.addBinding(params, 'mass', {
         min: 0.1,
         max: 5.0,
         step: 0.1,
         label: 'Mass'
+    }).on('change', (ev) => {
+        physicsApi.updateClothParams({ mass: ev.value });
     });
 
     const visualsFolder = pane.addFolder({ title: 'Visuals' });
@@ -354,8 +396,16 @@ async function init() {
             mat.opacity = ev.value;
             mat.transparent = ev.value < 1.0;
         }
-    });
-    visualsFolder.addBinding(params, 'showAxes', { label: 'Show Axes' }).on('change', (ev) => {
+    });    visualsFolder.addBinding(params, 'exposure', {
+        min: 0.0,
+        max: 2.0,
+        step: 0.1,
+        label: 'Brightness'
+    }).on('change', (ev) => {
+        // Direct light intensity control for more visible change
+        lights.ambient.intensity = 0.5 * ev.value;
+        lights.directional.intensity = 1.0 * ev.value;
+    });    visualsFolder.addBinding(params, 'showAxes', { label: 'Show Axes' }).on('change', (ev) => {
         axesHelper.visible = ev.value;
     });
     visualsFolder.addBinding(params, 'showGrid', { label: 'Show Grid' }).on('change', (ev) => {
@@ -378,7 +428,7 @@ async function init() {
                 const url = event.target?.result as string;
                 textureLoader.load(url, (texture) => {
                     if ((window as any).clothMat) {
-                        const mat = (window as any).clothMat as THREE.MeshPhongMaterial;
+                        const mat = (window as any).clothMat as THREE.MeshPhysicalMaterial;
                         
                         texture.wrapS = THREE.RepeatWrapping;
                         texture.wrapT = THREE.RepeatWrapping;
@@ -400,6 +450,49 @@ async function init() {
     visualsFolder.addButton({ title: 'Change Texture' }).on('click', () => {
         fileInput.click();
     });
+
+    const textureSamples: Record<string, string> = {
+        'None': '',
+        'Grid': 'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/uv_grid_opengl.jpg',
+        'Checker': 'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/floors/FloorsCheckerboard_S_Diffuse.jpg',
+        'Lava': 'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/lava/lavatile.jpg',
+        'Brick': 'https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/brick_diffuse.jpg'
+    };
+
+    visualsFolder.addBinding(params, 'textureType', {
+        options: {
+            None: 'None',
+            Grid: 'Grid',
+            Checker: 'Checker',
+            Lava: 'Lava',
+            Brick: 'Brick'
+        },
+        label: 'Sample Textures'
+    }).on('change', (ev) => {
+        const url = textureSamples[ev.value];
+        if (url) {
+            textureLoader.load(url, (texture) => {
+                if ((window as any).clothMat) {
+                    const mat = (window as any).clothMat as THREE.MeshPhysicalMaterial;
+                    texture.wrapS = THREE.RepeatWrapping;
+                    texture.wrapT = THREE.RepeatWrapping;
+                    texture.repeat.set(params.textureRepeat, params.textureRepeat);
+                    mat.map = texture;
+                    mat.color.set(0xffffff);
+                    mat.needsUpdate = true;
+                    params.color = '#ffffff';
+                    pane.refresh();
+                }
+            });
+        } else if (ev.value === 'None') {
+            if ((window as any).clothMat) {
+                const mat = (window as any).clothMat as THREE.MeshPhysicalMaterial;
+                mat.map = null;
+                mat.needsUpdate = true;
+            }
+        }
+    });
+
     visualsFolder.addBinding(params, 'textureRepeat', {
         min: 1,
         max: 10,
@@ -436,6 +529,7 @@ async function init() {
             if (result && result.positions) {
                 const attr = clothGeom.attributes.position;
                 (attr.array as Float32Array).set(result.positions);
+
                 attr.needsUpdate = true;
                 clothGeom.computeVertexNormals();
                 
@@ -454,12 +548,20 @@ async function init() {
         }
 
         controls.update();
-        renderer.render(scene, camera);
+        composer.render();
         
         stats.end();
     }
 
     animate();
+
+    // 창 크기 조절 대응
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        composer.setSize(window.innerWidth, window.innerHeight);
+    });
 
     // Mouse Events for Hand Tool & Pin Tool
     window.addEventListener('mousedown', async (event) => {
@@ -556,13 +658,6 @@ async function init() {
             draggedVertexIndex = -1;
             await physicsApi.releaseNode();
         }
-    });
-
-    // 창 크기 조절 대응
-    window.addEventListener('resize', () => {
-        camera.aspect = window.innerWidth / window.innerHeight;
-        camera.updateProjectionMatrix();
-        renderer.setSize(window.innerWidth, window.innerHeight);
     });
 }
 
