@@ -147,7 +147,13 @@ async function init() {
         clothGeom.rotateX(-Math.PI / 2);
         clothGeom.translate(clothPos.x, clothPos.y, clothPos.z);
         
-        const clothMat = new THREE.MeshPhongMaterial({ color: params.color, side: THREE.DoubleSide, wireframe: params.wireframe });
+        const clothMat = new THREE.MeshPhongMaterial({ 
+            color: params.color, 
+            side: THREE.DoubleSide, 
+            wireframe: params.wireframe,
+            transparent: params.opacity < 1.0,
+            opacity: params.opacity
+        });
         clothMesh = new THREE.Mesh(clothGeom, clothMat);
         scene.add(clothMesh);
 
@@ -174,6 +180,9 @@ async function init() {
     const params = {
         wireframe: false,
         color: '#ff0000',
+        opacity: 1.0,
+        showAxes: true,
+        showGrid: true,
         segments: 40,
         obstacleType: 'Cylinder',
         obstacleRadius: 2,
@@ -283,7 +292,7 @@ async function init() {
 
     clothFolder.addBinding(params, 'segments', {
         min: 10,
-        max: 80,
+        max: 100,
         step: 1,
         label: 'Resolution'
     });
@@ -318,6 +327,24 @@ async function init() {
     });
     visualsFolder.addBinding(params, 'color').on('change', (ev) => {
         if ((window as any).clothMat) (window as any).clothMat.color.set(ev.value);
+    });
+    visualsFolder.addBinding(params, 'opacity', {
+        min: 0.0,
+        max: 1.0,
+        step: 0.01,
+        label: 'Opacity'
+    }).on('change', (ev) => {
+        if ((window as any).clothMat) {
+            const mat = (window as any).clothMat as THREE.MeshPhongMaterial;
+            mat.opacity = ev.value;
+            mat.transparent = ev.value < 1.0;
+        }
+    });
+    visualsFolder.addBinding(params, 'showAxes', { label: 'Show Axes' }).on('change', (ev) => {
+        axesHelper.visible = ev.value;
+    });
+    visualsFolder.addBinding(params, 'showGrid', { label: 'Show Grid' }).on('change', (ev) => {
+        gridHelper.visible = ev.value;
     });
 
     // Texture Upload
