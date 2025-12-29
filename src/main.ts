@@ -133,6 +133,9 @@ async function init() {
             obstacleMesh = new THREE.Mesh(geom, obstacleMat);
             obstacleMesh.position.set(obstaclePos.x, obstaclePos.y, obstaclePos.z);
             await physicsApi.createBox({ x: size, y: height, z: size }, obstaclePos);
+        } else {
+            // None: No obstacle created in physics or scene
+            obstacleMesh = null;
         }
 
         if (obstacleMesh) scene.add(obstacleMesh);
@@ -141,7 +144,9 @@ async function init() {
         const clothWidth = 6;
         const clothHeight = 6;
         const segments = params.segments;
-        const clothPos = { x: 0, y: params.obstacleHeight + 2, z: 0 };
+        // If no obstacle, use a default height or the height parameter
+        const startHeight = obstacleType === 'None' ? 4 : params.obstacleHeight + 2;
+        const clothPos = { x: 0, y: startHeight, z: 0 };
 
         clothGeom = new THREE.PlaneGeometry(clothWidth, clothHeight, segments, segments);
         clothGeom.rotateX(-Math.PI / 2);
@@ -159,6 +164,7 @@ async function init() {
 
         await physicsApi.createCloth(clothWidth, clothHeight, segments, segments, clothPos, {
             stiffness: params.stiffness,
+            bending: params.bending,
             friction: params.friction,
             damping: params.damping,
             mass: params.mass
@@ -191,6 +197,7 @@ async function init() {
         pinTool: false,
         textureRepeat: 1,
         stiffness: 0.9,
+        bending: 0.5,
         friction: 0.5,
         damping: 0.01,
         mass: 0.5,
@@ -234,6 +241,7 @@ async function init() {
     const obstacleFolder = pane.addFolder({ title: 'Obstacle Settings' });
     obstacleFolder.addBinding(params, 'obstacleType', {
         options: {
+            None: 'None',
             Cylinder: 'Cylinder',
             Sphere: 'Sphere',
             Box: 'Box'
@@ -256,10 +264,10 @@ async function init() {
     const clothFolder = pane.addFolder({ title: 'Cloth Settings' });
     
     const fabricPresets: Record<string, any> = {
-        'Silk': { stiffness: 0.4, friction: 0.2, damping: 0.01, mass: 0.2, color: '#ffb6c1' },
-        'Cotton': { stiffness: 0.7, friction: 0.5, damping: 0.02, mass: 0.5, color: '#ffffff' },
-        'Wool': { stiffness: 0.5, friction: 0.8, damping: 0.05, mass: 0.8, color: '#f5f5dc' },
-        'Denim': { stiffness: 0.9, friction: 0.7, damping: 0.03, mass: 1.2, color: '#1560bd' },
+        'Silk': { stiffness: 0.4, bending: 0.1, friction: 0.2, damping: 0.01, mass: 0.2, color: '#ffb6c1' },
+        'Cotton': { stiffness: 0.7, bending: 0.5, friction: 0.5, damping: 0.02, mass: 0.5, color: '#ffffff' },
+        'Wool': { stiffness: 0.5, bending: 0.3, friction: 0.8, damping: 0.05, mass: 0.8, color: '#f5f5dc' },
+        'Denim': { stiffness: 0.9, bending: 0.8, friction: 0.7, damping: 0.03, mass: 1.2, color: '#1560bd' },
         'Custom': {}
     };
 
@@ -276,6 +284,7 @@ async function init() {
         const preset = fabricPresets[ev.value];
         if (ev.value !== 'Custom') {
             params.stiffness = preset.stiffness;
+            params.bending = preset.bending;
             params.friction = preset.friction;
             params.damping = preset.damping;
             params.mass = preset.mass;
@@ -301,6 +310,12 @@ async function init() {
         max: 1.0,
         step: 0.1,
         label: 'Stiffness'
+    });
+    clothFolder.addBinding(params, 'bending', {
+        min: 0.0,
+        max: 1.0,
+        step: 0.1,
+        label: 'Bending'
     });
     clothFolder.addBinding(params, 'friction', {
         min: 0.0,

@@ -163,16 +163,22 @@ function createCloth(width: number, height: number, segmentsW: number, segmentsH
         sbConfig.set_kDF(physicsParams.friction || 0.5);
         
         const material = clothSoftBody.get_m_materials().at(0);
-        material.set_m_kLST(physicsParams.stiffness || 0.9);
-        material.set_m_kAST(physicsParams.stiffness || 0.9);
+        material.set_m_kLST(physicsParams.stiffnessWarp || 0.9);
+        material.set_m_kAST(physicsParams.stiffnessWarp || 0.9);
         
         clothSoftBody.setTotalMass(physicsParams.mass || 0.5, false);
     } else {
         // Default values
-        clothSoftBody.get_m_materials().at(0).set_m_kLST(0.9);
-        clothSoftBody.get_m_materials().at(0).set_m_kAST(0.9);
+        const material = clothSoftBody.get_m_materials().at(0);
+        material.set_m_kLST(0.9);
+        material.set_m_kAST(0.9);
         clothSoftBody.setTotalMass(0.5, false);
     }
+
+    // Add bending constraints
+    // The distance (2nd param) effectively controls bending stiffness
+    const bendingDistance = physicsParams?.bending ? Math.floor(physicsParams.bending * 3) + 1 : 2;
+    clothSoftBody.generateBendingConstraints(bendingDistance);
 
     // Generate clusters for self-collision if using CL_SELF (0x10)
     // For very high resolutions, automatic cluster generation (0) can cause OOM.
